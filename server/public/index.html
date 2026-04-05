@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<title>HEIC HDR Converter</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --glass: rgba(255,255,255,.05);
+    --glass-h: rgba(255,255,255,.08);
+    --glass-border: rgba(255,255,255,.1);
+    --glass-hi: rgba(255,255,255,.15);
+    --glass-lo: rgba(0,0,0,.4);
+    --text: #f0f0f0;
+    --dim: rgba(255,255,255,.4);
+    --dim2: rgba(255,255,255,.25);
+    --green: #5ee67a;
+    --red: #ff6b6b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    padding: 44px 20px 60px;
+    /* Subtle radial glow behind content */
+    background-image:
+      radial-gradient(ellipse 600px 400px at 50% 0%, rgba(255,255,255,.04), transparent);
+  }
+
+  .wrap { max-width: 540px; width: 100%; }
+
+  h1 {
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -.3px;
+    margin-bottom: 4px;
+    background: linear-gradient(180deg, #fff 30%, rgba(255,255,255,.6));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .sub { color: var(--dim); font-size: 12.5px; margin-bottom: 28px; font-weight: 400; }
+
+  /* ─── Glass panel base ──────────────────────────── */
+  .glass {
+    background: var(--glass);
+    border: 1px solid var(--glass-border);
+    border-radius: 14px;
+    backdrop-filter: blur(40px) saturate(1.2);
+    -webkit-backdrop-filter: blur(40px) saturate(1.2);
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.07),
+      inset 0 -1px 0 rgba(0,0,0,.2),
+      0 2px 8px rgba(0,0,0,.3),
+      0 8px 32px rgba(0,0,0,.2);
+  }
+
+  /* ─── Drop zone ─────────────────────────────────── */
+  .drop {
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .2s;
+    margin-bottom: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .drop::before {
+    content: '';
+    position: absolute;
+    inset: 8px;
+    border: 1.5px dashed rgba(255,255,255,.15);
+    border-radius: 8px;
+    pointer-events: none;
+    transition: border-color .2s;
+  }
+  .drop:hover { background: var(--glass-h); }
+  .drop:hover::before { border-color: rgba(255,255,255,.3); }
+  .drop.over { background: rgba(255,255,255,.1); }
+  .drop.over::before { border-color: rgba(255,255,255,.4); }
+  .drop p { color: #fff; font-size: 13.5px; font-weight: 500; }
+  .drop .fmt { font-size: 11px; color: var(--dim2); margin-top: 5px; }
+
+  /* ─── File list ─────────────────────────────────── */
+  .files { margin-bottom: 16px; }
+  .file {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    margin-bottom: 6px;
+    font-size: 13px;
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 10px;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.04),
+      0 1px 3px rgba(0,0,0,.2);
+  }
+  .file .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .file .sz { color: var(--dim); font-size: 11px; margin-left: 10px; flex-shrink: 0; }
+  .file .rm {
+    color: var(--dim2); cursor: pointer; margin-left: 12px;
+    font-size: 18px; line-height: 1; flex-shrink: 0;
+    transition: color .15s;
+  }
+  .file .rm:hover { color: var(--red); }
+
+  /* ─── Controls panel ────────────────────────────── */
+  .ctrl {
+    padding: 18px 20px;
+    margin-bottom: 16px;
+  }
+  .row { margin-bottom: 16px; }
+  .row:last-child { margin-bottom: 0; }
+  .row label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12.5px;
+    font-weight: 500;
+    margin-bottom: 8px;
+    color: rgba(255,255,255,.7);
+  }
+  .row label span { color: var(--dim); font-size: 12px; font-weight: 400; }
+  .tip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: rgba(255,255,255,.1);
+    border: 1px solid rgba(255,255,255,.08);
+    color: rgba(255,255,255,.4);
+    font-size: 8px;
+    font-weight: 700;
+    cursor: help;
+    position: relative;
+    margin-left: 5px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.1);
+  }
+  .tip:hover::after {
+    content: attr(data-t);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(30,30,30,.95);
+    border: 1px solid rgba(255,255,255,.1);
+    backdrop-filter: blur(20px);
+    color: var(--text);
+    padding: 10px 13px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 400;
+    width: 230px;
+    text-align: left;
+    z-index: 10;
+    line-height: 1.45;
+    pointer-events: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,.5);
+  }
+
+  /* ─── Range slider (3D glass track + thumb) ─────── */
+  input[type="range"] {
+    width: 100%;
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 4px;
+    outline: none;
+    background: rgba(255,255,255,.08);
+    box-shadow:
+      inset 0 1px 2px rgba(0,0,0,.4),
+      0 1px 0 rgba(255,255,255,.05);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    cursor: pointer;
+    background: linear-gradient(180deg, rgba(255,255,255,.95), rgba(220,220,220,.85));
+    border: .5px solid rgba(255,255,255,.3);
+    box-shadow:
+      0 1px 4px rgba(0,0,0,.4),
+      0 4px 12px rgba(0,0,0,.2),
+      inset 0 1px 0 rgba(255,255,255,1),
+      inset 0 -1px 2px rgba(0,0,0,.1);
+  }
+  input[type="range"]::-webkit-slider-thumb:active {
+    transform: scale(.92);
+    background: linear-gradient(180deg, rgba(230,230,230,.9), rgba(200,200,200,.8));
+  }
+
+  /* ─── Convert button (white frosted glass, 3D) ──── */
+  .btn {
+    width: 100%;
+    padding: 14px;
+    border: 1px solid rgba(255,255,255,.25);
+    border-radius: 13px;
+    font-size: 14.5px;
+    font-weight: 600;
+    letter-spacing: .1px;
+    cursor: pointer;
+    position: relative;
+    transition: all .15s;
+    color: #fff;
+    background:
+      linear-gradient(180deg,
+        rgba(255,255,255,.75) 0%,
+        rgba(255,255,255,.5) 40%,
+        rgba(235,235,235,.45) 100%);
+    backdrop-filter: blur(30px) saturate(1.5);
+    -webkit-backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow:
+      /* outer 3D lift */
+      0 1px 1px rgba(255,255,255,.3),
+      0 4px 12px rgba(0,0,0,.25),
+      0 12px 40px rgba(0,0,0,.15),
+      /* inner top highlight = raised edge */
+      inset 0 2px 1px rgba(255,255,255,.6),
+      /* inner bottom shadow = depth */
+      inset 0 -2px 4px rgba(0,0,0,.08);
+    text-shadow: 0 1px 3px rgba(0,0,0,.3);
+  }
+  .btn:hover:not(:disabled) {
+    background:
+      linear-gradient(180deg,
+        rgba(255,255,255,.85) 0%,
+        rgba(255,255,255,.6) 40%,
+        rgba(245,245,245,.55) 100%);
+    box-shadow:
+      0 1px 1px rgba(255,255,255,.35),
+      0 6px 16px rgba(0,0,0,.3),
+      0 16px 48px rgba(0,0,0,.15),
+      inset 0 2px 1px rgba(255,255,255,.7),
+      inset 0 -2px 4px rgba(0,0,0,.06);
+    transform: translateY(-.5px);
+  }
+  .btn:active:not(:disabled) {
+    transform: translateY(.5px);
+    background:
+      linear-gradient(180deg,
+        rgba(225,225,225,.6) 0%,
+        rgba(240,240,240,.5) 50%,
+        rgba(250,250,250,.55) 100%);
+    box-shadow:
+      0 1px 2px rgba(0,0,0,.2),
+      inset 0 2px 6px rgba(0,0,0,.1),
+      inset 0 -1px 1px rgba(255,255,255,.3);
+  }
+  .btn:disabled {
+    opacity: .25;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  /* ─── Results ───────────────────────────────────── */
+  .results { margin-top: 20px; }
+  .res {
+    padding: 16px;
+    margin-bottom: 10px;
+  }
+  .res-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .res-head .name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .badge {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    margin-left: 10px;
+    letter-spacing: .3px;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .badge.ok {
+    background: rgba(94,230,122,.1);
+    border-color: rgba(94,230,122,.15);
+    color: var(--green);
+  }
+  .badge.err {
+    background: rgba(255,107,107,.1);
+    border-color: rgba(255,107,107,.15);
+    color: var(--red);
+  }
+  .badge.run {
+    background: rgba(255,255,255,.06);
+    border-color: rgba(255,255,255,.1);
+    color: rgba(255,255,255,.6);
+  }
+
+  .meta { font-size: 11.5px; color: var(--dim); margin-bottom: 12px; line-height: 1.7; }
+  .meta span { margin-right: 14px; }
+
+  /* ─── Download button (glass pill) ──────────────── */
+  .dl {
+    display: inline-block;
+    padding: 7px 18px;
+    text-decoration: none;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: rgba(0,0,0,.8);
+    background:
+      linear-gradient(180deg,
+        rgba(255,255,255,.7) 0%,
+        rgba(240,240,240,.5) 100%);
+    border: 1px solid rgba(255,255,255,.2);
+    backdrop-filter: blur(20px);
+    box-shadow:
+      0 1px 4px rgba(0,0,0,.2),
+      inset 0 1px 0 rgba(255,255,255,.5),
+      inset 0 -1px 2px rgba(0,0,0,.05);
+    transition: all .15s;
+    text-shadow: 0 .5px 0 rgba(255,255,255,.3);
+  }
+  .dl:hover {
+    background:
+      linear-gradient(180deg,
+        rgba(255,255,255,.8) 0%,
+        rgba(250,250,250,.6) 100%);
+    box-shadow:
+      0 2px 8px rgba(0,0,0,.25),
+      inset 0 1px 0 rgba(255,255,255,.6),
+      inset 0 -1px 2px rgba(0,0,0,.05);
+    transform: translateY(-.5px);
+  }
+
+  .spin {
+    display: inline-block;
+    width: 11px; height: 11px;
+    border: 1.5px solid rgba(255,255,255,.3);
+    border-top-color: rgba(255,255,255,.8);
+    border-radius: 50%;
+    animation: sp .7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  .err-msg { font-size: 12px; color: var(--red); opacity: .85; }
+  .err-hint {
+    font-size: 11.5px;
+    color: var(--dim);
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,.03);
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,.05);
+  }
+  .elapsed { color: var(--dim2); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>HEIC HDR Converter</h1>
+  <p class="sub">Convert images to HEIC with HDR gain map for Apple displays</p>
+
+  <div class="drop glass" id="drop">
+    <p>Drop images here or click to browse</p>
+    <p class="fmt">TIFF &middot; PNG &middot; JPEG</p>
+    <input type="file" id="fi" hidden multiple accept=".tiff,.tif,.png,.jpg,.jpeg">
+  </div>
+
+  <div class="files" id="files"></div>
+
+  <div class="ctrl glass">
+    <div class="row">
+      <label>Quality <span id="qv">0.85</span></label>
+      <input type="range" id="qs" min="0.5" max="1.0" step="0.01" value="0.85">
+    </div>
+    <div class="row">
+      <label>
+        Headroom
+        <span class="tip" data-t="Controls max HDR brightness boost. Higher = more dynamic range on HDR/XDR displays. 4.0 is a good default. Use lower values for subtle effect, higher for punchy highlights.">?</span>
+        <span id="hv">4.0</span>
+      </label>
+      <input type="range" id="hs" min="1.0" max="8.0" step="0.1" value="4.0">
+    </div>
+  </div>
+
+  <button class="btn" id="go" disabled>Convert</button>
+
+  <div class="results" id="out"></div>
+</div>
+
+<script>
+const $ = s => document.getElementById(s);
+const drop = $('drop'), fi = $('fi'), filesEl = $('files'), goBtn = $('go'), outEl = $('out');
+const qs = $('qs'), hs = $('hs'), qv = $('qv'), hv = $('hv');
+let sel = [];
+
+qs.oninput = () => qv.textContent = qs.value;
+hs.oninput = () => hv.textContent = parseFloat(hs.value).toFixed(1);
+
+drop.onclick = () => fi.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); add(e.dataTransfer.files); };
+fi.onchange = () => { add(fi.files); fi.value = ''; };
+
+function add(files) {
+  for (const f of files) {
+    if (!sel.find(s => s.name === f.name && s.size === f.size)) sel.push(f);
+  }
+  render();
+}
+function remove(i) { sel.splice(i, 1); render(); }
+function render() {
+  filesEl.innerHTML = sel.map((f, i) =>
+    `<div class="file"><span class="name">${esc(f.name)}</span><span class="sz">${fmtSz(f.size)}</span><span class="rm" onclick="remove(${i})">&times;</span></div>`
+  ).join('');
+  goBtn.disabled = !sel.length;
+}
+
+function fmtSz(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+const _escEl = document.createElement('div');
+function esc(s) { _escEl.textContent = s; return _escEl.innerHTML; }
+function showError(el, name, message, hint) {
+  el.innerHTML =
+    `<div class="res-head"><span class="name">${esc(name)}</span><span class="badge err">Error</span></div>` +
+    `<div class="err-msg">${esc(message)}</div>` +
+    (hint ? `<div class="err-hint">${esc(hint)}</div>` : '');
+}
+
+goBtn.onclick = async () => {
+  if (!sel.length) return;
+  goBtn.disabled = true;
+  const batch = [...sel];
+  sel = [];
+  render();
+
+  for (const file of batch) {
+    const id = 'r' + Date.now() + Math.random().toString(36).slice(2, 6);
+    outEl.insertAdjacentHTML('beforeend',
+      `<div class="res glass" id="${id}"><div class="res-head"><span class="name">${esc(file.name)}</span><span class="badge run"><span class="spin"></span>Converting</span></div></div>`
+    );
+
+    try {
+      const t0 = performance.now();
+      const fd = new FormData();
+      fd.append('image', file);
+      fd.append('quality', qs.value);
+      fd.append('headroom', hs.value);
+      const resp = await fetch('/api/convert', { method: 'POST', body: fd });
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      const data = await resp.json();
+      const el = document.getElementById(id);
+
+      if (data.success) {
+        const inFmt = esc(file.name.split('.').pop().toUpperCase());
+        el.innerHTML =
+          `<div class="res-head"><span class="name">${esc(file.name)}</span><span class="badge ok">${secs}s</span></div>` +
+          `<div class="meta"><span>Input: ${inFmt}</span><span>${data.width} &times; ${data.height}</span><span>Output: ${fmtSz(data.outputSize)}</span></div>` +
+          `<a class="dl" href="${esc(data.downloadUrl)}" download="${esc(file.name.replace(/\.[^.]+$/, '.heic'))}">Download HEIC</a>`;
+      } else {
+        showError(el, file.name, data.error || 'Unknown error', data.hint);
+      }
+    } catch (err) {
+      const el = document.getElementById(id);
+      if (el) showError(el, file.name, err.message, 'Check that the app is running and try again.');
+    }
+  }
+  goBtn.disabled = !sel.length;
+};
+</script>
+</body>
+</html>

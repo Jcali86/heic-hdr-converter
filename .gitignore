@@ -1,0 +1,6 @@
+tmp/
+heic-convert
+*.app/
+*.icns
+.DS_Store
+__pycache__/
