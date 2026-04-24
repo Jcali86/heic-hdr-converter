@@ -104,7 +104,19 @@
       inset 0 1px 0 rgba(255,255,255,.04),
       0 1px 3px rgba(0,0,0,.2);
   }
-  .file .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .file .arrow {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: rgba(255,255,255,.5);
+    margin-left: 10px;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.06);
+    flex-shrink: 0;
+    letter-spacing: .3px;
+  }
   .file .sz { color: var(--dim); font-size: 11px; margin-left: 10px; flex-shrink: 0; }
   .file .rm {
     color: var(--dim2); cursor: pointer; margin-left: 12px;
@@ -366,12 +378,12 @@
 <body>
 <div class="wrap">
   <h1>HEIC HDR Converter</h1>
-  <p class="sub">Convert images to HEIC with HDR gain map for Apple displays</p>
+  <p class="sub">JPEG / PNG / TIFF → HEIC HDR &middot; HEIC → JPEG</p>
 
   <div class="drop glass" id="drop">
     <p>Drop images here or click to browse</p>
-    <p class="fmt">TIFF &middot; PNG &middot; JPEG</p>
-    <input type="file" id="fi" hidden multiple accept=".tiff,.tif,.png,.jpg,.jpeg">
+    <p class="fmt">JPEG &middot; PNG &middot; TIFF &middot; HEIC</p>
+    <input type="file" id="fi" hidden multiple accept=".tiff,.tif,.png,.jpg,.jpeg,.heic,.heif">
   </div>
 
   <div class="files" id="files"></div>
@@ -411,6 +423,10 @@ drop.ondragleave = () => drop.classList.remove('over');
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); add(e.dataTransfer.files); };
 fi.onchange = () => { add(fi.files); fi.value = ''; };
 
+function outputFmt(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  return (ext === 'heic' || ext === 'heif') ? 'JPEG' : 'HEIC';
+}
 function add(files) {
   for (const f of files) {
     if (!sel.find(s => s.name === f.name && s.size === f.size)) sel.push(f);
@@ -420,7 +436,7 @@ function add(files) {
 function remove(i) { sel.splice(i, 1); render(); }
 function render() {
   filesEl.innerHTML = sel.map((f, i) =>
-    `<div class="file"><span class="name">${esc(f.name)}</span><span class="sz">${fmtSz(f.size)}</span><span class="rm" onclick="remove(${i})">&times;</span></div>`
+    `<div class="file"><span class="name">${esc(f.name)}</span><span class="arrow">→ ${outputFmt(f.name)}</span><span class="sz">${fmtSz(f.size)}</span><span class="rm" onclick="remove(${i})">&times;</span></div>`
   ).join('');
   goBtn.disabled = !sel.length;
 }
@@ -465,10 +481,13 @@ goBtn.onclick = async () => {
 
       if (data.success) {
         const inFmt = esc(file.name.split('.').pop().toUpperCase());
+        const outExt = data.outputExt || '.heic';
+        const outLabel = outExt === '.jpg' ? 'JPEG' : 'HEIC';
+        const outName = esc(file.name.replace(/\.[^.]+$/, outExt));
         el.innerHTML =
           `<div class="res-head"><span class="name">${esc(file.name)}</span><span class="badge ok">${secs}s</span></div>` +
-          `<div class="meta"><span>Input: ${inFmt}</span><span>${data.width} &times; ${data.height}</span><span>Output: ${fmtSz(data.outputSize)}</span></div>` +
-          `<a class="dl" href="${esc(data.downloadUrl)}" download="${esc(file.name.replace(/\.[^.]+$/, '.heic'))}">Download HEIC</a>`;
+          `<div class="meta"><span>${inFmt} → ${outLabel}</span><span>${data.width} &times; ${data.height}</span><span>${fmtSz(data.outputSize)}</span></div>` +
+          `<a class="dl" href="${esc(data.downloadUrl)}" download="${outName}">Download ${outLabel}</a>`;
       } else {
         showError(el, file.name, data.error || 'Unknown error', data.hint);
       }

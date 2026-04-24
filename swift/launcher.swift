@@ -96,7 +96,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKDown
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.tiff, .png, .jpeg]
+        panel.allowedContentTypes = [.tiff, .png, .jpeg, .heic]
         panel.beginSheetModal(for: window) { result in
             completionHandler(result == .OK ? panel.urls : nil)
         }
@@ -151,7 +151,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKDown
                   completionHandler: @escaping (URL?) -> Void) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = suggestedFilename
-        panel.allowedContentTypes = [.heic]
+        let ext = (suggestedFilename as NSString).pathExtension.lowercased()
+        panel.allowedContentTypes = ext == "jpg" || ext == "jpeg" ? [.jpeg] : [.heic]
         panel.beginSheetModal(for: window) { result in
             completionHandler(result == .OK ? panel.url : nil)
         }

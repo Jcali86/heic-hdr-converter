@@ -58,143 +58,183 @@ while argIdx < args.count {
 quality = min(max(quality, 0.0), 1.0)
 headroom = min(max(headroom, 1.0), 16.0)
 
-// MARK: - Load Image
-
 let inputURL = URL(fileURLWithPath: inputPath)
 let outputURL = URL(fileURLWithPath: outputPath)
 
-guard let imgSource = CGImageSourceCreateWithURL(inputURL as CFURL, nil),
-      let cgImage = CGImageSourceCreateImageAtIndex(imgSource, 0, nil) else {
-    fail("Failed to load image", hint: "File may be corrupted or in an unsupported format. Try JPEG, PNG, or TIFF.")
+func reportSuccess(width: Int, height: Int) -> Never {
+    let fm = FileManager.default
+    guard let attrs = try? fm.attributesOfItem(atPath: outputPath),
+          let size = attrs[.size] as? Int64 else {
+        fail("File written but cannot read back", hint: "The output file may have been deleted or moved.")
+    }
+    let elapsed = Int64(Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000)
+    outputJSON(ConvertResult(success: true, output: outputPath, size_bytes: size, width: width, height: height, elapsed_ms: elapsed))
+    exit(0)
 }
 
-let srcProps = CGImageSourceCopyPropertiesAtIndex(imgSource, 0, nil) as? [String: Any]
-let exifOrientation = srcProps?[kCGImagePropertyOrientation as String] as? UInt32 ?? 1
+// MARK: - Decode: HEIC → JPEG
 
-var ciImage = CIImage(cgImage: cgImage)
-if let orient = CGImagePropertyOrientation(rawValue: exifOrientation) {
-    ciImage = ciImage.oriented(orient)
+func decodeHEICToJPEG() -> Never {
+    guard let imgSource = CGImageSourceCreateWithURL(inputURL as CFURL, nil),
+          let cgImage = CGImageSourceCreateImageAtIndex(imgSource, 0, nil) else {
+        fail("Failed to load HEIC", hint: "File may be corrupted or not a valid HEIC. Try a different image.")
+    }
+
+    let srcProps = CGImageSourceCopyPropertiesAtIndex(imgSource, 0, nil) as? [String: Any]
+    let exifOrientation = srcProps?[kCGImagePropertyOrientation as String] as? UInt32 ?? 1
+
+    var ciImage = CIImage(cgImage: cgImage)
+    if let orient = CGImagePropertyOrientation(rawValue: exifOrientation) {
+        ciImage = ciImage.oriented(orient)
+    }
+
+    let w = Int(ciImage.extent.width)
+    let h = Int(ciImage.extent.height)
+
+    // Use Display P3 to preserve wide-gamut HEIC colors. Modern apps (macOS, iOS,
+    // Chrome, Safari, Firefox) all handle P3 JPEGs correctly via embedded ICC profile.
+    guard let outCS = CGColorSpace(name: CGColorSpace.displayP3) else {
+        fail("Color space not available", hint: "Display P3 requires macOS 14+.")
+    }
+
+    let ctx = CIContext(options: [.highQualityDownsample: true])
+
+    do {
+        try ctx.writeJPEGRepresentation(of: ciImage, to: outputURL, colorSpace: outCS, options: [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality
+        ])
+    } catch {
+        fail("Failed to write JPEG", hint: "Encoding failed: \(error.localizedDescription)")
+    }
+
+    reportSuccess(width: w, height: h)
 }
 
-let w = Int(ciImage.extent.width)
-let h = Int(ciImage.extent.height)
-let pixelCount = w * h
-let extent = ciImage.extent
+// MARK: - Encode: JPEG/PNG/TIFF → HEIC HDR
 
-// MARK: - Setup CIContext in Extended Linear P3
+func encodeToHEICHDR() -> Never {
+    guard let imgSource = CGImageSourceCreateWithURL(inputURL as CFURL, nil),
+          let cgImage = CGImageSourceCreateImageAtIndex(imgSource, 0, nil) else {
+        fail("Failed to load image", hint: "File may be corrupted or in an unsupported format. Try JPEG, PNG, or TIFF.")
+    }
 
-guard let workingCS = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3) else {
-    fail("Color space not available", hint: "Extended linear Display P3 requires macOS 14+.")
-}
-guard let outCS = CGColorSpace(name: CGColorSpace.displayP3) else {
-    fail("Color space not available", hint: "Display P3 requires macOS 14+.")
-}
+    let srcProps = CGImageSourceCopyPropertiesAtIndex(imgSource, 0, nil) as? [String: Any]
+    let exifOrientation = srcProps?[kCGImagePropertyOrientation as String] as? UInt32 ?? 1
 
-let ctx = CIContext(options: [
-    .workingColorSpace: workingCS,
-    .highQualityDownsample: true
-])
+    var ciImage = CIImage(cgImage: cgImage)
+    if let orient = CGImagePropertyOrientation(rawValue: exifOrientation) {
+        ciImage = ciImage.oriented(orient)
+    }
 
-// MARK: - Render to Float Buffer for Gain Map Computation
+    let w = Int(ciImage.extent.width)
+    let h = Int(ciImage.extent.height)
+    let pixelCount = w * h
+    let extent = ciImage.extent
 
-let kR: Float = 0.2126, kG: Float = 0.7152, kB: Float = 0.0722
-let logH = Float(log2(headroom))
-let eps: Float = 1.0 / 65536.0
+    guard let workingCS = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3) else {
+        fail("Color space not available", hint: "Extended linear Display P3 requires macOS 14+.")
+    }
+    guard let outCS = CGColorSpace(name: CGColorSpace.displayP3) else {
+        fail("Color space not available", hint: "Display P3 requires macOS 14+.")
+    }
 
-var pixels = [Float](repeating: 0, count: pixelCount * 4)
-let bytesPerRow = w * 4 * MemoryLayout<Float>.size
-ctx.render(ciImage, toBitmap: &pixels, rowBytes: bytesPerRow, bounds: extent,
-           format: .RGBAf, colorSpace: workingCS)
+    let ctx = CIContext(options: [
+        .workingColorSpace: workingCS,
+        .highQualityDownsample: true
+    ])
 
-// Single pass: find maxLum and speculatively compute HDR gain map
-var maxLum: Float = 0
-var gainMapVals = [UInt8](repeating: 0, count: pixelCount)
+    let kR: Float = 0.2126, kG: Float = 0.7152, kB: Float = 0.0722
+    let logH = Float(log2(headroom))
+    let eps: Float = 1.0 / 65536.0
 
-for i in 0..<pixelCount {
-    let off = i * 4
-    let r = max(pixels[off], 0)
-    let g = max(pixels[off + 1], 0)
-    let b = max(pixels[off + 2], 0)
-    let lum = kR * r + kG * g + kB * b
-    if lum > maxLum { maxLum = lum }
+    var pixels = [Float](repeating: 0, count: pixelCount * 4)
+    let bytesPerRow = w * 4 * MemoryLayout<Float>.size
+    ctx.render(ciImage, toBitmap: &pixels, rowBytes: bytesPerRow, bounds: extent,
+               format: .RGBAf, colorSpace: workingCS)
 
-    let sdrLum = min(lum, 1.0)
-    let gain = sdrLum > eps ? log2(max(lum, eps) / sdrLum) / logH : 0
-    gainMapVals[i] = UInt8(min(max(gain, 0), 1) * 255)
-}
+    // Single pass: find maxLum and speculatively compute HDR gain map
+    var maxLum: Float = 0
+    var gainMapVals = [UInt8](repeating: 0, count: pixelCount)
 
-// If content is SDR, recompute with synthetic boost formula
-if maxLum <= 1.05 {
-    let boostFactor = logH / 2.0  // normalize so headroom=4.0 gives original behavior
     for i in 0..<pixelCount {
         let off = i * 4
-        let lum = kR * max(pixels[off], 0) + kG * max(pixels[off + 1], 0) + kB * max(pixels[off + 2], 0)
-        let gain = lum * lum * boostFactor
+        let r = max(pixels[off], 0)
+        let g = max(pixels[off + 1], 0)
+        let b = max(pixels[off + 2], 0)
+        let lum = kR * r + kG * g + kB * b
+        if lum > maxLum { maxLum = lum }
+
+        let sdrLum = min(lum, 1.0)
+        let gain = sdrLum > eps ? log2(max(lum, eps) / sdrLum) / logH : 0
         gainMapVals[i] = UInt8(min(max(gain, 0), 1) * 255)
     }
+
+    // If content is SDR, recompute with synthetic boost formula
+    if maxLum <= 1.05 {
+        let boostFactor = logH / 2.0  // normalize so headroom=4.0 gives original behavior
+        for i in 0..<pixelCount {
+            let off = i * 4
+            let lum = kR * max(pixels[off], 0) + kG * max(pixels[off + 1], 0) + kB * max(pixels[off + 2], 0)
+            let gain = lum * lum * boostFactor
+            gainMapVals[i] = UInt8(min(max(gain, 0), 1) * 255)
+        }
+    }
+
+    // CIImage(bitmapData:) uses bottom-left origin, same as CIContext render — no flip needed
+    let gmData = gainMapVals.withUnsafeBytes { Data($0) }
+    let gmCI = CIImage(bitmapData: gmData, bytesPerRow: w,
+                       size: CGSize(width: w, height: h),
+                       format: .L8, colorSpace: CGColorSpace(name: CGColorSpace.linearGray))
+
+    let sdrCI = ciImage.applyingFilter("CIColorClamp", parameters: [
+        "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
+        "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
+    ])
+
+    // CIContext.heifRepresentation generates gain map auxiliary data in the correct
+    // internal format. Read that back, then re-encode the primary image with
+    // CGImageDestination for user-controlled quality.
+    guard let heifBuf = ctx.heifRepresentation(of: sdrCI, format: .RGBA8,
+                                                colorSpace: outCS,
+                                                options: [.hdrGainMapImage: gmCI]) else {
+        fail("Failed to generate HEIF with gain map", hint: "The image may be too large or have an unsupported pixel format. Try a smaller image.")
+    }
+
+    guard let tempSrc = CGImageSourceCreateWithData(heifBuf as CFData, nil),
+          let gmAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(tempSrc, 0,
+                        kCGImageAuxiliaryDataTypeHDRGainMap) else {
+        fail("Failed to extract gain map data", hint: "Internal encoding error. Try a different image or lower quality setting.")
+    }
+
+    guard let sdrCGImage = ctx.createCGImage(sdrCI, from: extent, format: .RGBA8,
+                                              colorSpace: outCS) else {
+        fail("Failed to render SDR base image", hint: "The image may be too large for available memory. Try a smaller image.")
+    }
+
+    guard let dest = CGImageDestinationCreateWithURL(
+        outputURL as CFURL, "public.heic" as CFString, 1, nil
+    ) else {
+        fail("Cannot create output file", hint: "Check that the output directory exists and is writable.")
+    }
+
+    CGImageDestinationAddImage(dest, sdrCGImage, [
+        kCGImageDestinationLossyCompressionQuality: quality
+    ] as CFDictionary)
+
+    CGImageDestinationAddAuxiliaryDataInfo(dest, kCGImageAuxiliaryDataTypeHDRGainMap, gmAux)
+
+    guard CGImageDestinationFinalize(dest) else {
+        fail("Failed to write HEIC output", hint: "Encoding failed. Try lowering quality or using a smaller image.")
+    }
+
+    reportSuccess(width: w, height: h)
 }
 
-// MARK: - Create Gain Map CIImage
+// MARK: - Dispatch on input extension
 
-// CIImage(bitmapData:) uses bottom-left origin, same as CIContext render — no flip needed
-let gmData = gainMapVals.withUnsafeBytes { Data($0) }
-let gmCI = CIImage(bitmapData: gmData, bytesPerRow: w,
-                   size: CGSize(width: w, height: h),
-                   format: .L8, colorSpace: CGColorSpace(name: CGColorSpace.linearGray))
-
-// MARK: - Create SDR Base Image
-
-let sdrCI = ciImage.applyingFilter("CIColorClamp", parameters: [
-    "inputMinComponents": CIVector(x: 0, y: 0, z: 0, w: 0),
-    "inputMaxComponents": CIVector(x: 1, y: 1, z: 1, w: 1)
-])
-
-// MARK: - Write HEIC with Gain Map
-//
-// Strategy: CIContext.heifRepresentation generates gain map auxiliary data in the
-// correct internal format. We read that back, then re-encode the primary image
-// with CGImageDestination for user-controlled quality.
-
-guard let heifBuf = ctx.heifRepresentation(of: sdrCI, format: .RGBA8,
-                                            colorSpace: outCS,
-                                            options: [.hdrGainMapImage: gmCI]) else {
-    fail("Failed to generate HEIF with gain map", hint: "The image may be too large or have an unsupported pixel format. Try a smaller image.")
+let inputExt = (inputPath as NSString).pathExtension.lowercased()
+if inputExt == "heic" || inputExt == "heif" {
+    decodeHEICToJPEG()
+} else {
+    encodeToHEICHDR()
 }
-
-guard let tempSrc = CGImageSourceCreateWithData(heifBuf as CFData, nil),
-      let gmAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(tempSrc, 0,
-                    kCGImageAuxiliaryDataTypeHDRGainMap) else {
-    fail("Failed to extract gain map data", hint: "Internal encoding error. Try a different image or lower quality setting.")
-}
-
-guard let sdrCGImage = ctx.createCGImage(sdrCI, from: extent, format: .RGBA8,
-                                          colorSpace: outCS) else {
-    fail("Failed to render SDR base image", hint: "The image may be too large for available memory. Try a smaller image.")
-}
-
-guard let dest = CGImageDestinationCreateWithURL(
-    outputURL as CFURL, "public.heic" as CFString, 1, nil
-) else {
-    fail("Cannot create output file", hint: "Check that the output directory exists and is writable.")
-}
-
-CGImageDestinationAddImage(dest, sdrCGImage, [
-    kCGImageDestinationLossyCompressionQuality: quality
-] as CFDictionary)
-
-CGImageDestinationAddAuxiliaryDataInfo(dest, kCGImageAuxiliaryDataTypeHDRGainMap, gmAux)
-
-guard CGImageDestinationFinalize(dest) else {
-    fail("Failed to write HEIC output", hint: "Encoding failed. Try lowering quality or using a smaller image.")
-}
-
-// MARK: - Report Result
-
-let fm = FileManager.default
-guard let attrs = try? fm.attributesOfItem(atPath: outputPath),
-      let size = attrs[.size] as? Int64 else {
-    fail("File written but cannot read back", hint: "The output file may have been deleted or moved.")
-}
-
-let elapsed = Int64(Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000)
-outputJSON(ConvertResult(success: true, output: outputPath, size_bytes: size, width: w, height: h, elapsed_ms: elapsed))

@@ -94,7 +94,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # Download endpoint
         if path.startswith("/api/download/"):
             filename = os.path.basename(path.split("/")[-1])
-            if not filename.endswith(".heic"):
+            mime_by_ext = {".heic": "image/heic", ".jpg": "image/jpeg"}
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext not in mime_by_ext:
                 self.send_error(400, "Invalid file type")
                 return
             fp = TMP / filename
@@ -104,7 +106,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_error(404, "File not found or expired")
                 return
             self.send_response(200)
-            self.send_header("Content-Type", "image/heic")
+            self.send_header("Content-Type", mime_by_ext[file_ext])
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -144,10 +146,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         original_name = os.path.basename(image_field.filename)
         ext = os.path.splitext(original_name)[1].lower()
-        allowed = {".tiff", ".tif", ".png", ".jpg", ".jpeg"}
-        if ext not in allowed:
-            self._send_json({"success": False, "error": f"Unsupported format: {ext}", "hint": "Use JPEG, PNG, or TIFF images."}, 400)
+        encode_exts = {".tiff", ".tif", ".png", ".jpg", ".jpeg"}
+        decode_exts = {".heic", ".heif"}
+        if ext not in encode_exts and ext not in decode_exts:
+            self._send_json({"success": False, "error": f"Unsupported format: {ext}", "hint": "Use JPEG, PNG, TIFF (to encode) or HEIC (to decode)."}, 400)
             return
+        out_ext = ".jpg" if ext in decode_exts else ".heic"
+        operation = "decode" if ext in decode_exts else "encode"
 
         quality = "0.85"
         headroom = "4.0"
@@ -163,7 +168,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             shutil.copyfileobj(image_field.file, f)
 
         original_size = input_path.stat().st_size
-        output_path = TMP / f"{uid}.heic"
+        output_path = TMP / f"{uid}{out_ext}"
 
         # Run converter
         try:
@@ -209,10 +214,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         self._send_json({
             "success": True,
-            "downloadUrl": f"/api/download/{uid}.heic",
+            "downloadUrl": f"/api/download/{uid}{out_ext}",
             "originalName": original_name,
             "originalSize": original_size,
             "outputSize": cli_result.get("size_bytes"),
+            "outputExt": out_ext,
+            "operation": operation,
             "width": cli_result.get("width"),
             "height": cli_result.get("height"),
             "elapsed_ms": cli_result.get("elapsed_ms"),
